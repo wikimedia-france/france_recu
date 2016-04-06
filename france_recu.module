@@ -175,7 +175,7 @@ function setReceiptRecur ($contrib_recur, $receiptNumber, $date, $year) {
   $receiptNumber = $receiptNumber .":";
   CRM_Core_DAO::executeQuery("SET @rank:=0");
   $sql="update civicrm_contribution set invoice_id = CONCAT ( %1 , @rank:=@rank+1),thankyou_date= %2, receipt_date= %2  WHERE contribution_recur_id = %3 AND YEAR(receive_date)= %4 AND contribution_status_id=1 ORDER by receipt_date, id;";
-  $sqlParam =  array(3 => array($contrib_recur, 'Integer'), 1 => array($receiptNumber,'String'), 2=>array($date,'String'), 4=>($year, 'String'));
+  $sqlParam =  array(3 => array($contrib_recur, 'Integer'), 1 => array($receiptNumber,'String'), 2=>array($date,'String'), 4=>array($year, 'String'));
   
   $dao = CRM_Core_DAO::executeQuery($sql, $sqlParam);
 print_r($dao);  
