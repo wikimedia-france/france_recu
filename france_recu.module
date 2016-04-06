@@ -1,0 +1,384 @@
+<?php
+
+function france_recu_civicrm_config(&$config = NULL) { 
+  static $configured = FALSE; 
+  if ($configured) return; 
+  $configured = TRUE; 
+  $extRoot = dirname( __FILE__ ) . DIRECTORY_SEPARATOR; 
+  $include_path = $extRoot . PATH_SEPARATOR . get_include_path( );
+  set_include_path( $include_path );
+}
+
+function france_recu_civicrm_tokens(&$tokens,$prefix = "contribution.") {
+ $tokens ['contribution'] = array(
+    $prefix . "invoice_id" => 'Invoice ID',
+    $prefix . "thankyou_date" => 'Thank you date',
+    $prefix . "receipt_date" => 'Receipt date',
+    $prefix . "receipt_year" => 'Receipt year',
+    $prefix . "receipt_year_next" => 'Receipt year+1',
+    $prefix . "receive_year" => 'Receive year',
+    $prefix . "receive_year_next" => 'Receive year+1',
+    $prefix . "total_amount" => 'Total amount',
+    $prefix . "total_amount_letter" => 'Total amount in letter',
+    $prefix . "payment_instrument" => 'Payment Instrument',
+  );
+// $tokens ['date']['now'] = 'today';
+}
+
+function _france_recu_format_contribution ($contrib,$category="contribution") {
+  $r = array ();
+  foreach ($contrib as $k => $v) {
+    $r[$category .'.'.$k] = $v;
+  }
+  return $r;
+}
+
+function _france_recu_prepare_token (&$values,$context) {
+  global $civicrm_token;
+  setlocale (LC_ALL,'fr_FR.utf8');
+  //setlocale (LC_TIME,'fr_FR.utf8');
+  if (array_key_exists ('total_amount',$values)) {
+    
+    $old = set_include_path(get_include_path() . PATH_SEPARATOR . dirname(__FILE__));
+    require_once ('Numbers/Words.php');
+    $values['total_amount_letter'] = (Numbers_Words::toWords($values['total_amount'],"fr"));
+    set_include_path($old);
+  }
+  if (array_key_exists ('receipt_date',$values)) {
+    $values['receive_year'] = date ('Y',strtotime($values['receive_date']));
+    $values['receive_year_next'] =  $values['receive_year'] + 1;
+    $values['receipt_year'] = date ('Y',strtotime($values['receipt_date']));
+    $values['receipt_year_next'] =  $values['receipt_year'] + 1;
+    $values['receipt_date_long'] = (strftime ("%A %e %B %Y",strtotime($values['receipt_date'])));
+    $values['receipt_date'] = (strtotime($values['receipt_date']));
+  };
+  $values['receive_date_long'] = strftime ("%A %e %B %Y",strtotime($values['receive_date']));
+  $civicrm_token[$context]=$values;
+}
+
+function france_recu_civicrm_tokenValues(&$values, $cids, $job = NULL, $tokens = array(), $context = NULL) {
+  global $civicrm_token;
+  if ($tokens && array_key_exists ('contribution', $tokens)) {
+    foreach ($tokens['contribution'] as $token) {
+      if (array_key_exists($token,$civicrm_token[$context])) {
+        $values['contribution'][$token] = $civicrm_token[$context][$token];
+      } else {
+         $values['contribution'][$token] = "unknown\{contribution.$token\}";
+      }
+    }
+  }
+}
+
+function receiptNumber($year= null) {
+  if (!$year) {
+    $year = date("Y");
+  }
+  // how to make a transaction around this?
+  $id = variable_get('tttp_receipt_'.$year ,'0');
+  $id = $id +1 ;
+  variable_set('tttp_receipt_'.$year ,$id);
+  return "$year-$id";
+}
+
+
+
+/**
+ * Implements hook_civicrm_pre()
+ */
+function france_recu_civicrm_pre($op, $objectName, $objectId, &$objectRef) {
+  if ('Contribution' === $objectName) {
+    if ($op == 'delete')
+      return;
+    if ($op == 'edit') { //
+    }
+/*    if (is_numeric($objectRef['invoice_id'])) {//ogone sets wrongly the invoice id
+      $objectRef['invoice_id'] = null;
+    }
+*/
+    if (empty($objectRef['invoice_id']) ){ // no receipt yet yet
+      if (false && $objectRef['contribution_status_id'] == 1) { // but payment validated, we can generate the receipt
+print_r($objectRef);
+die ("pre");
+        $objectRef['invoice_id'] = receiptNumber();
+        $objectRef['receipt_date'] = date('Y-m-d H:i');
+        $objectRef['thankyou_date'] = $objectRef['receipt_date'];
+      } else  {
+        unset ($objectRef['thankyou_date']); // no receipt date if no invoice_id
+      }
+    }
+  }
+}
+
+function france_recu_civicrm_buildForm( $formName, &$form ) {
+  if ($formName != 'CRM_Contribute_Form_ContributionView' )
+    return;
+  $id = $form->get( 'id' );
+  $buttons = array(
+    array('type'      => 'submit',
+          'subName'   => 'view_receipt',
+          'name'      => ts('Imprimer recu'),
+          'icon'      => '<div class="icon ui-icon-print"></div>'.ts('Imprimer recu'),
+          'isDefault' => FALSE ), 
+    array('type'      => 'submit',
+          'subName'   => 'preview_receipt',
+          'name'      => ts('Apercu recu'),
+          'isDefault' => FALSE ), 
+    array('type'      => 'submit',
+          'subName'   => 'send_receipt',
+          'name'      => ts('Email recu'),
+          'icon'      => '<div class="icon ui-icon-mail-closed"></div>'.ts('Email recu'),
+          'isDefault' => FALSE ), 
+  );
+  $form->addButtons( $buttons );
+}
+
+function france_recu_civicrm_postProcess( $formName, &$form ) {
+  $action=null;
+  if ($formName != 'CRM_Contribute_Form_ContributionView' )
+    return;
+  if ( isset($_POST['_qf_ContributionView_submit_view_receipt']))
+    $action='view';
+  if ( isset($_POST['_qf_ContributionView_submit_preview_receipt']))
+    $action='preview';
+  if ( isset($_POST['_qf_ContributionView_submit_send_receipt']))
+    $action='email';
+  if (!$action)
+    return;
+  $id = $form->get( 'id' );
+
+  $contribution = civicrm_api ('Contribution','GetSingle',array('version'=>3,'id'=>$id));
+  if (!empty ($contribution['is_error']))
+    die ("cant find contrib $id");
+
+  generateReceipt ($contribution,$action);
+}
+
+function fetchYearlyContribution ($recurring, $year, $on_receipt=false) {
+  $contribs = array();
+  $sql = "SELECT * FROM civicrm_contribution WHERE contribution_recur_id = %1 and contribution_status_id=1 and YEAR (receive_date) = %2";
+  if (!$on_receipt) {
+    $sql .= " AND invoice_id like %3";
+    $on_receipt .= ":%";
+  }
+  $sqlParam =  array(1 => array($recurring, 'Integer'), 2 => array($year,'String'),3 => array($on_receipt,'String'));
+  
+  $dao = CRM_Core_DAO::executeQuery($sql, $sqlParam);
+  
+  $values = array();
+  while ($dao->fetch()) {
+    $contribs[] = $dao->toArray();
+  }
+  return $contribs;
+}
+
+function setReceiptRecur ($contrib_recur, $receiptNumber,$date) {
+  $receiptNumber = $receiptNumber .":";
+  CRM_Core_DAO::executeQuery("SET @rank:=0");
+  $sql="update civicrm_contribution set invoice_id = CONCAT ( %1 , @rank:=@rank+1),thankyou_date= %2, receipt_date= %2  where contribution_recur_id = %3 ORDER by receipt_date, id;";
+  $sqlParam =  array(3 => array($contrib_recur, 'Integer'), 1 => array($receiptNumber,'String'), 2=>array($date,'String'));
+  
+  $dao = CRM_Core_DAO::executeQuery($sql, $sqlParam);
+print_r($dao);  
+}
+
+function setReceipt (&$objectRef,$receiptNumber,$date) {
+    // convert to fr format.
+    foreach ($objectRef as $k => &$v) {
+      if (strpos($k,'amount')) {
+      	$v = str_replace ('.',',',$v);
+      }
+    }
+    $objectRef['receipt_date'] = $date;
+    if (!defined('CIVICRM_MAIL_LOG')){
+      $objectRef['thankyou_date'] = $date;
+    }
+
+
+    $objectRef['non_deductible_amount'] = $objectRef['fee_amount'] = 0;
+    $objectRef['net_amount'] = str_replace (",",".",$objectRef['total_amount']);
+    $objectRef['total_amount'] = str_replace (",",".",$objectRef['total_amount']);
+   unset ($objectRef["payment_instrument"]); 
+   $r= civicrm_api3 ('Contribution','create',$objectRef);
+
+}
+
+function generateReceipt (&$objectRef,$mode) {
+  $templateId = 48;
+  $sepatemplateId = 89;
+
+  if (is_numeric($objectRef['invoice_id'])) {//ogone sets wrongly the invoice id
+    $objectRef['invoice_id'] = null;
+  }
+  if (preg_match('/^[a-f0-9]{32}$/',$objectRef['invoice_id'])) { //pay later format
+    $objectRef['invoice_id'] = null;
+  }
+
+  if (empty($objectRef['receipt_date']) || empty($objectRef['invoice_id'])) {
+    $objectRef['version']=3;
+    if (empty($objectRef['invoice_id'])) {
+      $objectRef['invoice_id'] = receiptNumber();
+    }
+    $date= date('Y-m-d H:i:s');
+    if ($objectRef["contribution_recur_id"]) {
+      setReceiptRecur ($objectRef["contribution_recur_id"], $objectRef['invoice_id'],$date);
+    } else {
+      setReceipt ($objectRef,$objectRef['invoice_id'],$date);
+    }
+  }
+  if ($objectRef["contribution_recur_id"]) {
+    //we need to find all the other contributions during the year
+    $year = substr ($objectRef["receive_date"],0,4);
+    $contribs = fetchYearlyContribution ($objectRef["contribution_recur_id"],$year,$objectRef['invoice_id']);
+    $objectRef["invoice_id"] = $contribs [0]["invoice_id"];
+    $objectRef['receipt_date'] = $contribs [0]['receipt_date'] ;
+    if (!defined('CIVICRM_MAIL_LOG')){
+      $objectRef['thankyou_date'] =  $contribs [0]['thankyou_date'];
+    }
+    $total = $nb = 0;
+    foreach ($contribs as $contrib) {
+      $nb +=1; 
+      $total += $contrib['total_amount'];
+    }
+    $objectRef['net_amount'] = str_replace (",",".",$total);
+    $objectRef['total_amount'] = str_replace (",",".",$total);
+    $objectRef['nb_contributions'] = $nb;
+    $templateId = $sepatemplateId;
+  }
+
+  $cid = $objectRef['contact_id'];
+  $messageTemplate = new CRM_Core_DAO_MessageTemplate();
+  $messageTemplate->id = $templateId;
+  $messageTemplate->selectAdd();
+  $messageTemplate->selectAdd('msg_text, msg_html, msg_subject, pdf_format_id');
+  $messageTemplate->find(TRUE);
+
+  $tokens = array();
+  CRM_Utils_Hook::tokens($tokens);
+  $categories = array_keys($tokens);
+
+  $html_message = $messageTemplate->msg_html;
+  $messageToken = CRM_Utils_Token::getTokens($html_message);
+  $returnProperties = null;
+  $params = array('contact_id' => $cid);
+  $context = 'Contribution';
+  _france_recu_prepare_token ($objectRef,$context);
+  list($contact) = CRM_Utils_Token::getTokenDetails($params,
+      $returnProperties,
+      false,
+      false,
+      NULL,
+      $messageToken,
+      $context
+    );
+  if (civicrm_error($contact)) {
+    die ("couldn't fetch contact: $cid ");
+  }
+  $tokenHtml = CRM_Utils_Token::replaceContactTokens($html_message, $contact[$cid], TRUE, $messageToken);
+  $tokenHtml = CRM_Utils_Token::replaceHookTokens($tokenHtml, 
+    _france_recu_format_contribution ($objectRef), $categories);
+
+  //time being hack to strip '&nbsp;'
+  //from particular letter line, CRM-6798
+  formatMessage($tokenHtml);
+  if ($mode == 'preview') {
+    header('Content-type: text/html; charset=utf-8');
+    echo $tokenHtml;
+    CRM_Utils_System::civiExit();
+  }
+  require_once 'CRM/Utils/PDF/Utils.php';
+  $fileName = "recu-".$objectRef['invoice_id'].".pdf";
+  if ($mode == 'view') {
+    CRM_Utils_PDF_Utils::html2pdf( $tokenHtml, $fileName, false, null );
+    CRM_Utils_System::civiExit();
+  }
+  if (_mailRecu ($tokenHtml,$fileName,$contact[$cid],$messageTemplate)) {
+    CRM_Core_Session::setStatus(ts("Reçu envoyé"));
+  } else {
+    return civicrm_api3_create_error("can't sent mail for $contact[$cid]");
+  }
+}
+
+function _mailRecu ($html,$fileName,$contact,$template) {
+//                      CRM_Core_Session::setStatus(ts("Report mail has been sent."));
+
+  $config = CRM_Core_Config::singleton();     
+  $pdfFullFilename = $config->templateCompileDir . CRM_Utils_File::makeFileName($fileName);
+  $pdfFullFilename = '/tmp/'.$fileName;
+
+  file_put_contents($pdfFullFilename,
+    CRM_Utils_PDF_Utils::html2pdf( $html,$fileName, true, null )
+  );
+  
+  require_once 'CRM/Core/BAO/Domain.php';
+  list($domainEmailName,$domainEmailAddress) = CRM_Core_BAO_Domain::getNameAndEmail();
+
+   $params              = array();
+    $params['groupName'] = 'Receipt Email Sender';
+    $params['from']      = '"' . $domainEmailName . '" <' . $domainEmailAddress . '>';
+    //$domainEmailName;
+    $params['toName']  = "";
+    $params['toEmail'] = CRM_Utils_Array::value('email', $contact);
+
+    $params['toName']  = $params['toEmail'];
+    #$params['toEmail'] = "test@wikimedia.fr";
+
+    if (empty ($params['toEmail'])){
+        CRM_Core_Session::setStatus(ts("Error sending $fileName: Contact doesn't have an email."));
+      return false;
+    }
+//    $params['cc']      = CRM_Utils_Array::value('email_cc', $instanceInfo);
+    $params['subject'] = $template->msg_subject . $fileName;
+    if (!CRM_Utils_Array::value('attachments', $instanceInfo)) {
+      $instanceInfo['attachments'] = array();
+    }
+    $params['attachments'][] = array(
+                        'fullPath' => $pdfFullFilename,
+                        'mime_type' => 'application/pdf',
+                        'cleanName' => $fileName,
+                      );
+ ;
+    $params['text'] = $template->msg_text;
+//    $params['html'] = $template->msg_text;
+
+    require_once "CRM/Utils/Mail.php";
+    return CRM_Utils_Mail::send($params);
+}
+
+function formatMessage(&$message) {
+  $newLineOperators = array(
+    'p' => array('oper' => '<p>',
+      'pattern' => '/<(\s+)?p(\s+)?>/m',
+    ),
+    'br' => array(
+      'oper' => '<br />',
+      'pattern' => '/<(\s+)?br(\s+)?\/>/m',
+    ),
+  );
+
+  $htmlMsg = preg_split($newLineOperators['p']['pattern'], $message);
+  foreach ($htmlMsg as $k => & $m) {
+    $messages = preg_split($newLineOperators['br']['pattern'], $m);
+    foreach ($messages as $key => & $msg) {
+      $msg = trim($msg);
+      $matches = array();
+      if (preg_match('/^(&nbsp;)+/', $msg, $matches)) {
+        $spaceLen = strlen($matches[0]) / 6;
+        $trimMsg  = ltrim($msg, '&nbsp; ');
+        $charLen  = strlen($trimMsg);
+        $totalLen = $charLen + $spaceLen;
+        if ($totalLen > 100) {
+          $spacesCount = 10;
+          if ($spaceLen > 50) {
+            $spacesCount = 20;
+          }
+          if ($charLen > 100) {
+            $spacesCount = 1;
+          }
+          $msg = str_repeat('&nbsp;', $spacesCount) . $trimMsg;
+        }
+      }
+    }
+    $m = implode($newLineOperators['br']['oper'], $messages);
+  }
+  $message = implode($newLineOperators['p']['oper'], $htmlMsg);
+}

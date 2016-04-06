@@ -1,0 +1,7 @@
+name = "French receipt"
+description = 'Generate receipts as legally required in france to allow the Donors to claim 66% of the donation on their tax returns'
+package = CiviCRM
+core = 7.x
+php = 5.2
+
+dependencies[] = civicrm

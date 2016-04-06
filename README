@@ -1,0 +1,56 @@
+This module allows to generate fiscal receipt in the proper legal format in France
+
+It alters the default workflow at several places
+
+1) before saving a contribution, it checks (based on the status) if the receipt has to be generated
+
+if it's not the case, it empties the receipt_date
+if the receipt has to be generated
+
+- It generates a unique id for each receipt (YYYY-id) and puts it into the invoice_id
+- It sets the receipt_date
+
+2) it alters the mail sent after confirmation to replace the default attachement by the fiscal receipt. 
+
+3) it alters the contribution view to add a "generate receipt" button and one "resend receipt"
+The former generates a pdf to download, the later sends it directly to the user and logs the mail sent
+
+Cela permet aux associations loi 1901 déclarées d'intérêt public de générer les reçus fiscaux au titre de dons.
+
+## Initialisation
+
+You need to set the counter for the invoice references (one per year, probably only for the current year needed
+
+drush variable-get tttp_receipt_2012 
+drush variable-set tttp_receipt_2012 42
+
+
+If you want to reset the invoice id (it might be read only on the UI): use the api explorer
+/civicrm/api/explorer#/civicrm_staging/civicrm/ajax/rest?json=1&debug=1&version=3&entity=Contribution&action=create&id=42&invoice_id=&
+
+Where 42 is the number of the contrib you want to alter
+
+## Implementation details and hacks
+
+It is using the invoice_id to store the tax receipt number
+It is using the "thank you" date as date the receipt was generated.
+
+##Update of the database to bulk update of single donations:
+
+Check how many are waiting:
+select count(*)  from civicrm_contribution as
+c,civicrm_value_wikimedia_donations_1 where entity_id=c.id and
+recu_fiscal_1=1 and contribution_type_id = 3 and
+contribution_status_id = 1 and thankyou_date is null;
+
+update civicrm_contribution as c,civicrm_value_wikimedia_donations_1
+set thankyou_date = "1971-01-01 01:01:00" where entity_id=c.id and
+recu_fiscal_1=1 and contribution_type_id = 3 and
+contribution_status_id = 1 and thankyou_date is null;
+
+## update of the database for the SEPA (recurring) contrib
+
+select id from (SELECT id,min(receive_date) from civicrm_contribution where contribution_recur_id is not null AND thankyou_date is null AND contribution_status_id = 1 group by contact_id ) as first_sepa_contrib;
+
+update civicrm_contribution set thankyou_date = "1971-01-01 01:01:00" where id in ( select id from (SELECT id,min(receive_date) from civicrm_contribution where contribution_recur_id is not null AND thankyou_date is null AND contribution_status_id = 1 group by contact_id ) as first_sepa_contrib );
+
